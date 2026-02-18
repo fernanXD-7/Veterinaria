@@ -4,6 +4,8 @@ const mysql = require('mysql2');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const jwt = require('jsonwebtoken');
+
 
 // Load environment variables
 dotenv.config();
@@ -12,6 +14,24 @@ dotenv.config();
 const app = express();
 app.use(express.json()); // Parse JSON requests
 app.use(cors()); // Enable CORS for frontend
+
+// Middleware para verificar token JWT en rutas protegidas
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.user = user; // Guardamos los datos del usuario
+    next();
+  });
+};
 
 // MySQL Connection Setup
 const db = mysql.createConnection({
@@ -60,20 +80,44 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// API Endpoint: Login (check credentials against MySQL)
+// API Endpoint: Login (devuelve JWT)
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).send('Missing username or password');
+  if (!username || !password) return res.status(400).json({ error: 'Missing username or password' });
 
   db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
-    if (err) return res.status(500).send('Server error');
-    if (results.length === 0) return res.status(400).send('Invalid username or password');
+    if (err) return res.status(500).json({ error: 'Server error' });
+    if (results.length === 0) return res.status(401).json({ error: 'Invalid username or password' });
 
     const user = results[0];
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).send('Invalid username or password');
+    if (!isMatch) return res.status(401).json({ error: 'Invalid username or password' });
 
-    res.status(200).send('Login successful!'); // In real apps, send a JWT token here
+    // Generar token JWT
+    const token = jwt.sign(
+      { id: user.id, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Respuesta con token y datos del usuario
+    res.json({
+      success: true,
+      token: token,
+      user: {
+        id: user.id,
+        username: user.username
+      }
+    });
+  });
+});
+
+// Endpoint protegido: obtener datos del usuario logueado
+app.get('/api/me', authenticateToken, (req, res) => {
+  res.json({
+    id: req.user.id,
+    username: req.user.username,
+    message: 'Datos del usuario autenticado correctamente'
   });
 });
 
